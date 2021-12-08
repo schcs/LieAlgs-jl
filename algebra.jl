@@ -220,7 +220,7 @@ function Base.:*( x::lie_algebra_element, y::lie_algebra_element )::lie_algebra_
     return lie_algebra_element{domain( x.parent )}( x.parent, res )
 end     
 
-
+ 
 function __mult( xc::Vector{Int64}, yc::Vector{Int64}, 
                     sc::Matrix{Vector{Pair{Int64,Int64}}} )::Vector{Int64}
 
