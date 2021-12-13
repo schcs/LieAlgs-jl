@@ -1,3 +1,4 @@
+using Base.Threads 
 # the type for structure constants tables
 sc_type = Matrix{Vector{Tuple{Int64,Int64}}}
 
@@ -9,7 +10,8 @@ struct lie_algebra{T}                     # T is the coefficient domain (Int64, 
     cartan_matrix::Matrix{Int64}          # Cartan matrix
     simple_roots::Vector{Vector{Int64}}   # list of simple roots
     root_system::Vector{Vector{Int64}}    # list of roots
-    structure_constants::sc_type          # the structure constants table 
+    structure_constants::Vector{Vector{Tuple{Int64,Int64,T}}}        
+                                          # the structure constants table 
 end
 
 # the type for a Lie algebra element 
@@ -21,17 +23,18 @@ end
 # the function for constructing Lie algebras associated with root systems
 # and for calculating with their elements
 function lie_algebra( type::String, rank::Int64; dom = Int64 )::lie_algebra
-    sr = simple_root_system( type, rank )
-    cm = cartan_matrix( sr )
-    root_system = sort( complete_root_system( sr ))
+    sr::Vector{Vector{Int64}} = simple_root_system( type, rank )
+    cm::Matrix{Int64} = cartan_matrix( sr )
+    root_system::Vector{Vector{Int64}} = sort( complete_root_system( sr ))
     
-    dim = rank+length(root_system)
-    table = fill( [], dim, dim )
-    for i in 1:dim
-        for j in i+1:dim
-            m = mult( sr, root_system,  cm, i, j )
-            table[i,j] = m
-            table[j,i] = [ (-x[1],x[2]) for x in m ]
+    dim::Int64 = rank+length(root_system)
+    table::Vector{Vector{Tuple{Int64,Int64,dom}}} = fill( [], dim )
+    for i in 1:dim, j in i+1:dim
+        ml::Vector{Tuple{dom,Int64}} = mult( sr, root_system,  cm, i, j )
+        if length( ml ) > 0
+            for m in ml
+                push!( table[m[2]], (i,j,m[1]))
+            end 
         end 
     end 
            
@@ -65,7 +68,8 @@ function lie_mon_to_string( alg, x )
     return "$(x[1])*$( x[2]<=rank(alg) ? "h($(-x[2]))" : "x($(alg.root_system[x[2]-rank(alg)]))")" 
 end
 
-function domain( l::lie_algebra )
+function domain( l )
+    
     return typeof( l ).parameters[1]
 end
 
@@ -167,6 +171,7 @@ function mult( simple_roots, roots, cart_mat, x, y )
     end
 end 
 
+
 #=
 function Base.:*( x::lie_algebra_element, y::lie_algebra_element )
 
@@ -185,66 +190,91 @@ function Base.:*( x::lie_algebra_element, y::lie_algebra_element )
     end
     return lie_algebra_element{Int64}( x.parent, res )
 end     
-
 =#
-
-function Base.:*( x::lie_algebra_element, y::lie_algebra_element )::lie_algebra_element
-
-    if x.parent != y.parent 
-        throw( "error: not elements of the same algebra" )
-    end 
-
-    dom::DataType = domain( x.parent )
-    res::Vector{dom} = zeros( dom, dimension( x.parent ))
-    xc, yc = x.content, y.content
-    sc = x.parent.structure_constants
-
-    dim::Int64 = dimension(x.parent)
-    local k::Tuple{dom,Int64}
-    local i::Int64, j::Int64
-    #local xi::Int64, yi::Int64 
-
-    for i in 1:dim
-        xi::Int64, yi::Int64 = xc[i], yc[i]
-        for j in i+1:dim
-            prod_ij = x.parent.structure_constants[i,j]
-            if length( prod_ij ) > 0
-                for k in prod_ij
-                    res[k[2]] += xi*yc[j]*k[1]
-                    res[k[2]] -= yi*xc[j]*k[1]
-                end
-            end
-        end  
-    end 
-
-    return lie_algebra_element{domain( x.parent )}( x.parent, res )
-end     
-
  
 function __mult( xc::Vector{Int64}, yc::Vector{Int64}, 
-                    sc::Matrix{Vector{Pair{Int64,Int64}}} )::Vector{Int64}
+                    sc::Matrix{Vector{Tuple{Int64,Int64}}} )::Vector{Int64}
 
     dim::Int64 = length( xc )                
     res::Vector{Int64} = zeros( Int64, dim )
     local k::Tuple{Int,Int64}
     local i::Int64, j::Int64
-    
-    for i in 1:dim
-        xi::Int64, yi::Int64 = xc[i], yc[i]
-        for j in i+1:dim
-            prod_ij = sc[i,j]
-            if length( prod_ij ) > 0
-                for k in prod_ij
-                    res[k[2]] += xi*yc[j]*k[1]
-                    res[k[2]] -= yi*xc[j]*k[1]
-                end
-            end
-        end  
+    xc, yc, sc = x.content, y.content, x.parent.structure_constants
+    res = fill( 0*xc[1], length( xc ))
+    for (i,j,scij) in sc
+          for k in scij
+            res[k[2]] += (xc[i]*yc[j]-yc[i]*xc[j])*k[1]
+          end  
     end 
+    return lie_algebra_element{domain(x.parent)}( x.parent, res )
+end  
 
+function __mult__( xc, yc, sc )
+
+    res = fill( 0*xc[1], length( xc ))
+    @threads for k2 in 1:length(xc)
+        for (i,j,k1) in sc[k2]
+            res[k2] += (xc[i]*yc[j]-yc[i]*xc[j])*k1
+        end
+    end 
     return res
-end     
+end  
 
-#function  AffineLieAlgebra( type, rank1, rank2, domain )
 
+function Base.:*( x::lie_algebra_element, y::lie_algebra_element; 
+                sc = x.parent.structure_constants, T = domain(x.parent) )::lie_algebra_element
     
+    #= 
+    #T::DataType = @domain( x.parent )
+    #T = Int64
+    xc::Vector{T}, yc::Vector{T} = x.content, y.content
+    res::Vector{T} = fill( 0*xc[1], length( xc ))
+
+    for (i,j,scij) in sc
+          for k in scij
+            res[k[2]] += (xc[i]*yc[j]-yc[i]*xc[j])*k[1]
+          end  
+    end
+    =# 
+    res = __mult__( x.content, y.content, sc )
+    return lie_algebra_element{T}( x.parent, res )
+end  
+
+#=
+function mkmult(simpsc)
+    function mult(xc, yc)
+      dim=length(xc)                
+      res=fill(0, dim)
+      for (i,j,scij) in simpsc
+        for k in scij
+          res[k[2]] += (xc[i]*yc[j]-yc[i]*xc[j])*k[1]
+        end  
+      end 
+      res
+    end     
+  
+    mult
+  end
+  
+  using JLD2
+  function mkmult(fname::String)
+    sc=load(fname)["sc"]
+    dim,_=size(sc)
+    simpsc=typeof((1,1,sc[1,1]))[]
+    for i in 1:dim, j in i+1:dim
+      if length(sc[i,j])>0
+        push!(simpsc,(i,j,sc[i,j]))
+      end
+    end
+    mkmult(simpsc),dim
+  end
+  
+  mult_,dim=mkmult("sc_table.jld2")
+  function comp(K)
+    for _ in 1:K
+      x,y,z=rand(-10:10,dim),rand(-10:10,dim),rand(-10:10,dim)
+      res=mult(mult(x, y),z) + mult(mult(y,z),x) + mult(mult(z, x), y)
+      @assert sum(res)==0
+    end
+  end
+  =#
